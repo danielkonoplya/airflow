@@ -2,8 +2,8 @@
 
 Используется в CI и в pre-commit (хук commit-msg). Без зависимостей.
 
-    python scripts/check_conventions.py branch feature/PROJ-123-streaming-copy
-    python scripts/check_conventions.py title "feat(pg2gp): PROJ-123 ..." --branch feature/PROJ-123-...
+    python scripts/check_conventions.py branch gau_23819
+    python scripts/check_conventions.py title "feat(pg2gp): GAU-23819 ..." --branch gau_23819
     python scripts/check_conventions.py commit-msg .git/COMMIT_EDITMSG
 """
 
@@ -16,29 +16,26 @@ import sys
 TYPES = ("feat", "fix", "perf", "refactor", "test", "docs", "chore", "ci", "revert")
 KEY = r"[A-Z][A-Z0-9]+-[0-9]+"
 
-SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
-
-BRANCH_RE = re.compile(rf"^(?:(feature|fix|hotfix)/({KEY})-{SLUG}|(chore|docs|ci)/{SLUG})$")
+# Ветка = ключ задачи Jira в нижнем регистре через '_': GAU-23819 -> gau_23819
+BRANCH_RE = re.compile(r"^([a-z][a-z0-9]+)_([0-9]+)$")
 SUBJECT_RE = re.compile(rf"^({'|'.join(TYPES)})(\([a-z0-9_-]+\))?!?: (?:({KEY}) )?\S(?:.*[^.\s])?$")
 # Сообщения, которые git создаёт сам
 AUTO_SUBJECT_RE = re.compile(r"^(Merge |Revert \"|fixup! |squash! |amend! )")
 
-FORMAT_HINT = "ожидается '<type>(<scope>): <KEY-123> <описание>', type: " + ", ".join(TYPES)
+FORMAT_HINT = "ожидается '<type>(<scope>): <GAU-123> <описание>', type: " + ", ".join(TYPES)
 
 
 def check_branch(name: str) -> list[str]:
     if name in ("main", "master"):
         return []
     if not BRANCH_RE.match(name):
-        return [
-            f"имя ветки '{name}' не по правилам: feature|fix|hotfix/<KEY-123>-<desc> или chore|docs|ci/<desc>"
-        ]
+        return [f"имя ветки '{name}' не по правилам: ключ задачи Jira вида gau_23819"]
     return []
 
 
 def branch_key(name: str) -> str | None:
     m = BRANCH_RE.match(name)
-    return m.group(2) if m else None
+    return f"{m.group(1).upper()}-{m.group(2)}" if m else None
 
 
 def check_subject(subject: str, required_key: str | None = None) -> list[str]:

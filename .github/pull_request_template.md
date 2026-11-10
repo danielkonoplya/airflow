@@ -1,8 +1,8 @@
-<!-- Заголовок PR: <type>(<scope>): <KEY-123> <что сделано> — см. CONTRIBUTING.md -->
+<!-- Заголовок PR: <type>(<scope>): <GAU-123> <что сделано> — см. CONTRIBUTING.md -->
 
 ## Задача
 
-Jira: PROJ-
+Jira: GAU-
 
 ## Что сделано
 

@@ -13,9 +13,10 @@ DAG'и Airflow 2.10 для интеграции с Greenplum 6.x (в т.ч. Aren
 Ветки, коммиты, заголовки PR и нейминг DAG'ов/задач/таблиц/SQL — строго по `CONTRIBUTING.md`; формат проверяет
 CI (`scripts/check_conventions.py`, `tests/test_dag_integrity.py`). Кратко:
 
-- Ветка: `feature|fix|hotfix/<KEY-123>-<desc>` или `chore|docs|ci/<desc>`; от `main`, один PR = одна задача Jira.
-- Коммит и заголовок PR: `<type>(<scope>): <KEY-123> <описание по-русски>` (Conventional Commits, без точки).
-  Ключ в заголовке PR = ключ из имени ветки. Слияние — squash.
+- Ветка = ключ задачи Jira в нижнем регистре через `_`: `GAU-23819` -> `gau_23819`, без префиксов и описания;
+  от `main`, одна задача = одна ветка = один PR.
+- Коммит и заголовок PR: `<type>(<scope>): <GAU-123> <описание по-русски>` (Conventional Commits, без точки).
+  Ключ в заголовке PR = ключ из имени ветки (`gau_23819` -> `GAU-23819`). Слияние — squash.
 - `dag_id` одиночного DAG'а = имя файла; из фабрики — `gp_<фабрика>__<name>`. `task_id` — `snake_case`, глагол.
 - Описание PR — по `.github/pull_request_template.md`, включая «Как проверено».
 
