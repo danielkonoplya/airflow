@@ -1,0 +1,25 @@
+# Мониторинг (gp_healthcheck) и обслуживание (gp_maintenance) кластера.
+gp_conn_id: greenplum_default
+
+healthcheck:
+  schedule: "*/15 * * * *"
+  long_query_minutes: 60        # активные запросы дольше — предупреждение
+  waiting_locks_threshold: 20   # ожидающих блокировок больше — предупреждение
+  min_free_disk_gb: 50          # свободного места меньше — критично
+
+maintenance:
+  schedule: "0 2 * * *"
+  catalog_vacuum: true               # VACUUM ANALYZE системного каталога
+  analyze_missing_stats_limit: 200   # сколько таблиц без статистики анализировать за запуск
+  vacuum_bloated: false              # false — только отчёт по gp_bloat_diag
+
+  partitions:
+    - table: ods.web_events
+      granularity: day     # day | month
+      premake: 7           # сколько периодов создавать наперёд
+      retention: 400       # хранить периодов
+      drop_enabled: false  # true — реально удалять партиции старше retention
+
+  skew_check:
+    tables: [ods.shop_orders, ods.web_events]
+    threshold: 0.2   # коэффициент вариации строк по сегментам

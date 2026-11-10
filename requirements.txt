@@ -1,0 +1,4 @@
+apache-airflow-providers-postgres
+apache-airflow-providers-common-sql
+apache-airflow-providers-amazon
+PyYAML

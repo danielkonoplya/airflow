@@ -1,0 +1,74 @@
+# Загрузки и выгрузки через внешние таблицы Greenplum (PXF, gpfdist).
+# imports -> DAG gp_ext_import__<name>, exports -> DAG gp_ext_export__<name>.
+#
+# В location, slice_value и s3_cleanup.prefix можно использовать Jinja-макросы
+# Airflow ({{ ds }}, {{ ds_nodash }} и т.д.).
+#
+# Для PXF нужны: установленный PXF на кластере, CREATE EXTENSION pxf
+# (gp_bootstrap с enable_pxf=true) и настроенный PXF-сервер (SERVER=...)
+# в $PXF_BASE/servers/<server>/s3-site.xml.
+
+imports:
+  # Parquet из S3 через PXF, ежедневная перезаливка партиции дня.
+  - name: web_events_s3
+    schedule: "@daily"
+    wait_for_s3:
+      aws_conn_id: s3_default
+      bucket_key: "s3://raw/web_events/dt={{ ds }}/_SUCCESS"
+      timeout_minutes: 360
+    location: "pxf://raw/web_events/dt={{ ds }}/?PROFILE=s3:parquet&SERVER=s3_default"
+    format: CUSTOM
+    format_options: "FORMATTER='pxfwritable_import'"
+    columns:
+      - [event_id, bigint]
+      - [user_id, bigint]
+      - [event_type, text]
+      - [page_url, text]
+      - [event_ts, timestamp]
+    target_table: ods.web_events
+    load_mode: replace_slice
+    slice_column: event_date
+    mapping:
+      event_id: event_id
+      user_id: user_id
+      event_type: event_type
+      page_url: page_url
+      event_ts: event_ts
+      event_date: event_ts::date
+
+  # CSV с файлового сервера через gpfdist, полная перезаливка справочника.
+  # Битые строки (до reject_limit) не роняют загрузку: см. gp_read_error_log('ext.r_partners_gpfdist').
+  - name: partners_gpfdist
+    schedule: "0 3 * * *"
+    location: "gpfdist://etl-host:8081/partners/{{ ds_nodash }}/*.csv"
+    format: CSV
+    format_options: "HEADER DELIMITER ','"
+    reject_limit: 100
+    columns:
+      - [partner_id, bigint]
+      - [partner_name, text]
+      - [country, text]
+    target_table: ods.partners
+    load_mode: full
+
+exports:
+  # Выгрузка витрины в S3 (Parquet) после каждого её обновления.
+  - name: sales_daily_s3
+    schedule_on: [dm.sales_daily]
+    s3_cleanup:
+      aws_conn_id: s3_default
+      bucket: export
+      prefix: "sales_daily/dt={{ ds }}/"
+    location: "pxf://export/sales_daily/dt={{ ds }}?PROFILE=s3:parquet&SERVER=s3_default"
+    format: CUSTOM
+    format_options: "FORMATTER='pxfwritable_export'"
+    columns:
+      - [report_date, date]
+      - [customer_segment, text]
+      - [orders_cnt, bigint]
+      - [customers_cnt, bigint]
+      - [revenue, "numeric(18,2)"]
+    query: >
+      SELECT report_date, customer_segment, orders_cnt, customers_cnt, revenue
+      FROM dm.sales_daily
+      WHERE report_date >= DATE '{{ macros.ds_add(ds, -30) }}'

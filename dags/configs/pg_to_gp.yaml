@@ -1,0 +1,33 @@
+# Загрузки PostgreSQL -> Greenplum. На каждую запись создаётся DAG gp_pg2gp__<name>.
+#
+# mode: incremental — окно по increment_column = data interval DAG'а (+ lookback_minutes),
+#                     upsert по primary_key. Источник обязан обновлять increment_column
+#                     при каждом изменении строки (триггер / ORM).
+# mode: full        — полная перезаливка (TRUNCATE + INSERT), для небольших справочников.
+#
+# distributed_by по умолчанию = primary_key: staging и цель распределены одинаково,
+# upsert выполняется локально на сегментах без redistribute motion.
+# Целевая таблица должна существовать (см. sql/bootstrap).
+
+defaults:
+  source_conn_id: oltp_postgres
+  schedule: "@hourly"
+  mode: incremental
+  lookback_minutes: 10
+  start_date: 2026-11-01
+
+tables:
+  - name: shop_orders
+    source_table: public.orders
+    target_table: ods.shop_orders
+    columns: [order_id, customer_id, status, amount, created_at, updated_at]
+    primary_key: [order_id]
+    increment_column: updated_at
+
+  - name: shop_customers
+    source_table: public.customers
+    target_table: ods.shop_customers
+    mode: full
+    schedule: "0 1 * * *"
+    columns: [customer_id, full_name, email, segment, created_at, updated_at]
+    primary_key: [customer_id]
