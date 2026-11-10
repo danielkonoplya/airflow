@@ -13,7 +13,7 @@ DAG'и Apache Airflow для интеграции с Greenplum: загрузка
 | `gp_pg2gp__<name>` | из конфига | PostgreSQL → GP через `COPY`: инкрементальный upsert или полная перезаливка |
 | `gp_ext_import__<name>` | из конфига | Загрузка через readable external table (PXF, gpfdist), ожидание файла в S3 |
 | `gp_ext_export__<name>` | cron или Dataset | Выгрузка запроса через writable external table (PXF → S3) |
-| `gp_dm_sales_daily` | Dataset'ы ODS | Пересборка витрины, DQ-проверки, сверка с ODS |
+| `gp_dm_sales_daily` | Dataset'ы ODS | Пересборка витрины с DQ-проверками и сверкой с ODS в одной транзакции |
 | `gp_healthcheck` | каждые 15 мин | Сегменты, свободное место, долгие запросы, блокировки |
 | `gp_maintenance` | ежедневно 02:00 | Партиции, ANALYZE, bloat, skew, VACUUM каталога |
 
@@ -80,10 +80,10 @@ requirements.txt    провайдеры postgres, common-sql, amazon
 
 Как работает:
 
-1. `COPY (SELECT ... WHERE updated_at >= start AND updated_at < end) TO STDOUT` из источника
-   во временный файл воркера.
-2. В одной транзакции GP: `TRUNCATE` staging → `COPY FROM STDIN` → `DELETE USING` + `INSERT`
-   последней версии строки по ключу → запись в `etl.load_log`.
+1. `COPY (SELECT ... WHERE updated_at >= start AND updated_at < end) TO STDOUT` из источника и
+   `COPY FROM STDIN` в staging GP идут одновременно через pipe: данные не пишутся на диск воркера.
+2. В той же транзакции GP: `ANALYZE` staging → `DELETE USING` + `INSERT` последней версии строки
+   по ключу → запись в `etl.load_log`.
 
 - **incremental** — окно = data interval DAG'а плюс `lookback_minutes`; повторные запуски и backfill идемпотентны.
 - **full** — `TRUNCATE` + `INSERT`; падает, если источник вернул 0 строк (разрешается `allow_empty_full_load`).
@@ -101,6 +101,9 @@ requirements.txt    провайдеры postgres, common-sql, amazon
 
 Режимы импорта:
 
+- `replace_partition` — загрузка во вспомогательную таблицу `stg.<schema>__<table>__part` и
+  `EXCHANGE PARTITION`: цель блокируется только на коммит, в AO-партициях не копятся удалённые строки.
+  Для таблиц, партиционированных по `slice_column`; опции хранения новой партиции — `partition_storage`;
 - `replace_slice` — удалить срез (`slice_column = '{{ ds }}'`) и вставить строки только этого среза;
 - `append`;
 - `full` — `TRUNCATE` + `INSERT`.
@@ -109,14 +112,20 @@ requirements.txt    провайдеры postgres, common-sql, amazon
 `gp_read_error_log('ext.r_<name>')`. Экспорт в S3 перед записью очищает префикс `s3_cleanup`,
 так как запись во writable external table не транзакционна.
 
+Сенсор S3 (`wait_for_s3`) работает в deferrable-режиме: ожидание идёт в triggerer, поэтому в кластере
+должен быть запущен `airflow triggerer`.
+
 В `location`, `slice_value` и `s3_cleanup.prefix` работают Jinja-макросы Airflow (`{{ ds }}`, `{{ ds_nodash }}`).
 
 ## Мониторинг и обслуживание
 
 Пороги и политики — в `configs/ops.yaml`.
 
-- `gp_healthcheck` падает при недоступном сегменте или нехватке места (срабатывает алерт);
-  несбалансированные сегменты, рассинхрон зеркал, долгие запросы и блокировки пишутся в лог как предупреждения.
+- `gp_healthcheck` — одна задача и одно подключение на все проверки; падает при недоступном сегменте,
+  нехватке места или ошибке проверки (срабатывает алерт); несбалансированные сегменты, рассинхрон зеркал,
+  долгие запросы и блокировки пишутся в лог как предупреждения.
+- Перекос (`skew_check`) считается по размеру файлов таблицы и её партиций на сегментах
+  (`gp_dist_random('pg_class')`), без полного прохода по данным.
 - `gp_maintenance` создаёт партиции на `premake` периодов вперёд и удаляет старше `retention`
   только при `drop_enabled: true`. Таблицы должны быть без `DEFAULT PARTITION`.
 

@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import logging
 
-import requests
-from airflow.models import Variable
-
 log = logging.getLogger(__name__)
 
 ALERT_WEBHOOK_VARIABLE = "gp_alert_webhook_url"
 
 
 def notify_failure(context) -> None:
+    # Импорты здесь, а не на уровне модуля: модуль грузится при каждом парсинге DAG'ов.
+    import requests
+    from airflow.models import Variable
+
     ti = context["task_instance"]
     text = (
         f"[Airflow] {ti.dag_id}.{ti.task_id} упал "

@@ -1,6 +1,12 @@
 # Загрузки и выгрузки через внешние таблицы Greenplum (PXF, gpfdist).
 # imports -> DAG gp_ext_import__<name>, exports -> DAG gp_ext_export__<name>.
 #
+# load_mode:
+#   replace_partition — загрузка во вспомогательную таблицу + EXCHANGE PARTITION; для партиционированных
+#                       по slice_column таблиц (особенно AO): без DELETE и без долгой блокировки цели;
+#   replace_slice     — DELETE среза + INSERT; для непартиционированных таблиц;
+#   append | full     — INSERT | TRUNCATE + INSERT.
+#
 # В location, slice_value и s3_cleanup.prefix можно использовать Jinja-макросы
 # Airflow ({{ ds }}, {{ ds_nodash }} и т.д.).
 #
@@ -9,7 +15,7 @@
 # в $PXF_BASE/servers/<server>/s3-site.xml.
 
 imports:
-  # Parquet из S3 через PXF, ежедневная перезаливка партиции дня.
+  # Parquet из S3 через PXF, ежедневная подмена партиции дня через EXCHANGE PARTITION.
   - name: web_events_s3
     schedule: "@daily"
     wait_for_s3:
@@ -26,8 +32,9 @@ imports:
       - [page_url, text]
       - [event_ts, timestamp]
     target_table: ods.web_events
-    load_mode: replace_slice
+    load_mode: replace_partition
     slice_column: event_date
+    partition_storage: "appendoptimized=true, orientation=column, compresstype=zstd, compresslevel=1"
     mapping:
       event_id: event_id
       user_id: user_id

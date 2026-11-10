@@ -179,5 +179,42 @@ def load_from_external(
     raise ValueError(f"Неизвестный режим загрузки: {mode!r}")
 
 
+def partition_staging_table(target_table: str) -> str:
+    schema, table = target_table.split(".")
+    return f"stg.{schema}__{table}__part"
+
+
+def replace_partition(
+    target: str,
+    external: str,
+    mapping: Sequence[Tuple[str, str]],
+    slice_column: str,
+    slice_value: str,
+    storage: Optional[str] = None,
+) -> List[str]:
+    """Перезаливка партиции через EXCHANGE PARTITION.
+
+    Данные грузятся в отдельную таблицу без блокировок цели, затем партиция
+    подменяется метаданными: целевая таблица блокируется только до коммита,
+    а в AO-партиции не копятся удалённые строки (visimap), как при DELETE.
+    Распределение staging наследуется от цели через LIKE; storage — опции WITH
+    для новой партиции (обычно те же, что у таблицы).
+    После обмена staging содержит старые данные партиции — очищаем.
+    """
+    staging = partition_staging_table(target)
+    cols = _cols([col for col, _ in mapping])
+    select = ", ".join(f"{expr} AS {col}" for col, expr in mapping)
+    with_clause = f" WITH ({storage})" if storage else ""
+    return [
+        f"CREATE TABLE IF NOT EXISTS {staging} (LIKE {target} INCLUDING DEFAULTS){with_clause}",
+        f"TRUNCATE {staging}",
+        f"INSERT INTO {staging} ({cols}) SELECT {cols} FROM (SELECT {select} FROM {external}) s "
+        f"WHERE s.{slice_column} = '{slice_value}'",
+        # Без валидации: строки уже отфильтрованы по срезу запросом выше.
+        f"ALTER TABLE {target} EXCHANGE PARTITION FOR ('{slice_value}') WITH TABLE {staging} WITHOUT VALIDATION",
+        f"TRUNCATE {staging}",
+    ]
+
+
 def export_to_external(external: str, columns: Sequence[str], query: str) -> str:
     return f"INSERT INTO {external} ({_cols(columns)}) {query}"

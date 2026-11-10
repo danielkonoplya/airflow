@@ -36,6 +36,27 @@ LIMIT %(limit)s
 
 BLOAT_SQL = "SELECT bdinspname, bdirelname, bdirelpages, bdiexppages, bdidiag FROM gp_toolkit.gp_bloat_diag"
 
+# Перекос оценивается по размеру файлов таблицы (и всех её партиций) на каждом
+# сегменте: pg_relation_size через gp_dist_random выполняется на сегментах и
+# читает только каталог/файловую систему — без полного прохода по данным,
+# как count(*) по gp_segment_id или gp_toolkit.gp_skew_coefficients.
+SKEW_RELATIONS_SQL = """
+SELECT %(table)s::regclass::oid
+UNION ALL
+SELECT (quote_ident(partitionschemaname) || '.' || quote_ident(partitiontablename))::regclass::oid
+FROM pg_partitions
+WHERE schemaname = %(schema)s AND tablename = %(name)s
+"""
+
+SEGMENT_SIZES_SQL = """
+SELECT gp_segment_id, sum(pg_relation_size(oid))::bigint
+FROM gp_dist_random('pg_class')
+WHERE oid = ANY(%(oids)s::oid[])
+GROUP BY 1
+"""
+
+PRIMARY_SEGMENTS_SQL = "SELECT content FROM gp_segment_configuration WHERE role = 'p' AND content >= 0"
+
 CATALOG_TABLES = (
     "pg_class", "pg_attribute", "pg_type", "pg_depend", "pg_index", "pg_constraint",
     "pg_namespace", "pg_proc", "pg_statistic", "pg_attrdef", "pg_partition_rule",

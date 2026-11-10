@@ -21,6 +21,8 @@ DEFAULT_START_DATE = date(2026, 11, 1)
 
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _TYPE_RE = re.compile(r"^[a-z][a-z0-9_ ,()\[\]]*$")
+_STORAGE_RE = re.compile(r"^[a-z0-9_=, ]+$")
+_SLICE_MODES = ("replace_slice", "replace_partition")
 _FORMATS = {"CSV", "TEXT", "CUSTOM"}
 
 
@@ -221,6 +223,7 @@ class ExternalImport:
     slice_column: Optional[str]
     slice_value: str
     mapping: Tuple[Tuple[str, str], ...]
+    partition_storage: Optional[str]
     wait_for_s3: Optional[S3Wait]
     gp_conn_id: str
 
@@ -284,7 +287,7 @@ def _parse_format(item: Dict[str, Any], what: str) -> Tuple[str, str]:
 _IMPORT_KEYS = {
     "name", "schedule", "start_date", "location", "format", "format_options", "columns",
     "reject_limit", "target_table", "load_mode", "slice_column", "slice_value", "mapping",
-    "wait_for_s3", "gp_conn_id",
+    "partition_storage", "wait_for_s3", "gp_conn_id",
 }
 
 
@@ -300,13 +303,21 @@ def parse_external_import(item: Dict[str, Any]) -> ExternalImport:
     mapping = tuple((ident(k, f"{what}.mapping"), str(v)) for k, v in raw_mapping.items())
 
     load_mode = item.get("load_mode", "replace_slice")
-    if load_mode not in ("replace_slice", "append", "full"):
-        raise ConfigError(f"{what}.load_mode: ожидается replace_slice|append|full")
+    if load_mode not in (*_SLICE_MODES, "append", "full"):
+        raise ConfigError(f"{what}.load_mode: ожидается replace_slice|replace_partition|append|full")
     slice_column = item.get("slice_column")
-    if load_mode == "replace_slice":
+    if load_mode in _SLICE_MODES:
         ident(slice_column, f"{what}.slice_column")
         if slice_column not in dict(mapping):
             raise ConfigError(f"{what}.slice_column: {slice_column!r} должна быть в mapping")
+
+    storage = item.get("partition_storage")
+    if storage is not None:
+        if load_mode != "replace_partition":
+            raise ConfigError(f"{what}.partition_storage: только для load_mode=replace_partition")
+        if not isinstance(storage, str) or not _STORAGE_RE.match(storage.lower()):
+            raise ConfigError(f"{what}.partition_storage: недопустимое значение {storage!r}")
+        storage = storage.lower()
 
     reject_limit = item.get("reject_limit")
     if reject_limit is not None and (not isinstance(reject_limit, int) or reject_limit < 2):
@@ -332,9 +343,10 @@ def parse_external_import(item: Dict[str, Any]) -> ExternalImport:
         reject_limit=reject_limit,
         target_table=table_name(item.get("target_table"), f"{what}.target_table"),
         load_mode=load_mode,
-        slice_column=slice_column if load_mode == "replace_slice" else None,
+        slice_column=slice_column if load_mode in _SLICE_MODES else None,
         slice_value=safe_literal(item.get("slice_value", "{{ ds }}"), f"{what}.slice_value"),
         mapping=mapping,
+        partition_storage=storage,
         wait_for_s3=wait_cfg,
         gp_conn_id=str(item.get("gp_conn_id", DEFAULT_GP_CONN_ID)),
     )

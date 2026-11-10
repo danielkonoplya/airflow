@@ -7,6 +7,7 @@
 """
 
 from datetime import timedelta
+from typing import List, Optional
 
 from airflow import DAG
 from airflow.decorators import task
@@ -17,9 +18,23 @@ from gp_lib.config import ExternalExport, ExternalImport, load_external
 from gp_lib.defaults import DEFAULT_ARGS, gp_dataset, to_pendulum
 
 
-def build_import_dag(cfg: ExternalImport) -> DAG:
+def import_statements(cfg: ExternalImport) -> List[str]:
     ext = cfg.external_table
-    columns = [(c.name, c.type) for c in cfg.columns]
+    create = sb.create_readable_external(
+        ext, [(c.name, c.type) for c in cfg.columns], cfg.location, cfg.format, cfg.format_options, cfg.reject_limit
+    )
+    if cfg.load_mode == "replace_partition":
+        load = sb.replace_partition(
+            cfg.target_table, ext, cfg.mapping, cfg.slice_column, cfg.slice_value, cfg.partition_storage
+        )
+    else:
+        load = sb.load_from_external(
+            cfg.target_table, ext, cfg.mapping, cfg.load_mode, cfg.slice_column, cfg.slice_value
+        )
+    return [*create, *load, sb.drop_external(ext)]
+
+
+def build_import_dag(cfg: ExternalImport) -> DAG:
     with DAG(
         dag_id=cfg.dag_id,
         description=f"{cfg.location.split('?')[0]} -> {cfg.target_table} ({cfg.load_mode})",
@@ -35,15 +50,7 @@ def build_import_dag(cfg: ExternalImport) -> DAG:
         load = SQLExecuteQueryOperator(
             task_id="load",
             conn_id=cfg.gp_conn_id,
-            sql=[
-                *sb.create_readable_external(
-                    ext, columns, cfg.location, cfg.format, cfg.format_options, cfg.reject_limit
-                ),
-                *sb.load_from_external(
-                    cfg.target_table, ext, cfg.mapping, cfg.load_mode, cfg.slice_column, cfg.slice_value
-                ),
-                sb.drop_external(ext),
-            ],
+            sql=import_statements(cfg),
             execution_timeout=timedelta(hours=4),
             outlets=[gp_dataset(cfg.target_table)],
         )
@@ -51,21 +58,50 @@ def build_import_dag(cfg: ExternalImport) -> DAG:
         if cfg.wait_for_s3:
             from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 
+            # deferrable: ожидание идёт в triggerer, а не отдельным подом на каждую проверку.
             S3KeySensor(
                 task_id="wait_for_source",
                 aws_conn_id=cfg.wait_for_s3.aws_conn_id,
                 bucket_key=cfg.wait_for_s3.bucket_key,
-                mode="reschedule",
+                deferrable=True,
                 poke_interval=300,
                 timeout=cfg.wait_for_s3.timeout_minutes * 60,
             ) >> load
     return dag
 
 
+@task(task_id="export", execution_timeout=timedelta(hours=4))
+def export(
+    gp_conn_id: str,
+    statements: List[str],
+    aws_conn_id: Optional[str] = None,
+    bucket: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> int:
+    """Очистка префикса S3 и выгрузка — одна задача, т.е. один под.
+
+    Запись во writable external table не транзакционна для S3: при повторе старые
+    файлы остались бы рядом с новыми, поэтому префикс чистится перед записью.
+    """
+    from gp_lib.hooks import GreenplumHook
+
+    removed = 0
+    if bucket:
+        from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+
+        s3 = S3Hook(aws_conn_id=aws_conn_id)
+        keys = s3.list_keys(bucket_name=bucket, prefix=prefix) or []
+        if keys:
+            s3.delete_objects(bucket=bucket, keys=keys)
+        removed = len(keys)
+    GreenplumHook(gp_conn_id).run(statements)
+    return removed
+
+
 def build_export_dag(cfg: ExternalExport) -> DAG:
     ext = cfg.external_table
-    columns = [(c.name, c.type) for c in cfg.columns]
     schedule = [gp_dataset(t) for t in cfg.schedule_on] if cfg.schedule_on else cfg.schedule
+    cleanup = cfg.s3_cleanup
     with DAG(
         dag_id=cfg.dag_id,
         description=f"Greenplum -> {cfg.location.split('?')[0]}",
@@ -78,31 +114,19 @@ def build_export_dag(cfg: ExternalExport) -> DAG:
         tags=["greenplum", "export", "external"],
         doc_md=f"### {cfg.dag_id}\n\nВыгрузка запроса в `{cfg.location}` через writable external table.",
     ) as dag:
-        export = SQLExecuteQueryOperator(
-            task_id="export",
-            conn_id=cfg.gp_conn_id,
-            sql=[
-                *sb.create_writable_external(ext, columns, cfg.location, cfg.format, cfg.format_options),
+        export(
+            gp_conn_id=cfg.gp_conn_id,
+            statements=[
+                *sb.create_writable_external(
+                    ext, [(c.name, c.type) for c in cfg.columns], cfg.location, cfg.format, cfg.format_options
+                ),
                 sb.export_to_external(ext, [c.name for c in cfg.columns], cfg.query),
                 sb.drop_external(ext),
             ],
-            execution_timeout=timedelta(hours=4),
+            aws_conn_id=cleanup.aws_conn_id if cleanup else None,
+            bucket=cleanup.bucket if cleanup else None,
+            prefix=cleanup.prefix if cleanup else None,
         )
-
-        if cfg.s3_cleanup:
-            # Запись во writable external table не транзакционна для S3: при повторе
-            # старые файлы остались бы рядом с новыми, поэтому чистим префикс заранее.
-            @task(task_id="cleanup_target_prefix")
-            def cleanup_target_prefix(aws_conn_id: str, bucket: str, prefix: str) -> int:
-                from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-
-                hook = S3Hook(aws_conn_id=aws_conn_id)
-                keys = hook.list_keys(bucket_name=bucket, prefix=prefix) or []
-                if keys:
-                    hook.delete_objects(bucket=bucket, keys=keys)
-                return len(keys)
-
-            cleanup_target_prefix(cfg.s3_cleanup.aws_conn_id, cfg.s3_cleanup.bucket, cfg.s3_cleanup.prefix) >> export
     return dag
 
 
