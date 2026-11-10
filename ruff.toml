@@ -1,0 +1,7 @@
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "B"]
+# zip(strict=...) — включить вместе с правилами I и UP отдельным PR, когда код стабилизируется
+ignore = ["B905"]

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  AIRFLOW_VERSION: "2.10.5"
+
+jobs:
+  conventions:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Имя ветки
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: python scripts/check_conventions.py branch "$BRANCH"
+      - name: Заголовок PR (станет сообщением squash-коммита)
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BRANCH: ${{ github.head_ref }}
+        run: python scripts/check_conventions.py title "$TITLE" --branch "$BRANCH"
+      - name: Коммиты ветки (предупреждение — схлопываются при squash)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git log --no-merges --format=%s "$BASE..$HEAD" | while IFS= read -r subject; do
+            printf '%s\n' "$subject" > /tmp/msg
+            python scripts/check_conventions.py commit-msg /tmp/msg 2>&1 | sed 's/^/::warning::/' || true
+          done
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff pyyaml pytest
+      - name: ruff
+        run: ruff check --output-format=github .
+      - name: Валидация YAML-конфигов
+        run: pytest -q tests/test_configs.py
+
+  dagbag:
+    runs-on: ubuntu-latest
+    env:
+      AIRFLOW_HOME: ${{ github.workspace }}/.airflow
+      AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__UNIT_TEST_MODE: "True"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Установка Airflow ${{ env.AIRFLOW_VERSION }}
+        run: |
+          pip install "apache-airflow==${AIRFLOW_VERSION}" -r requirements.txt pytest \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+      - run: airflow db migrate
+      - name: Импорт DAG'ов и соглашения
+        run: pytest -q tests/test_dag_integrity.py

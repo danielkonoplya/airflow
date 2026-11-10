@@ -1,0 +1,28 @@
+# pip install pre-commit && pre-commit install --install-hooks -t pre-commit -t commit-msg
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: commit-msg-format
+        name: формат сообщения коммита (CONTRIBUTING.md)
+        entry: python scripts/check_conventions.py commit-msg
+        language: system
+        stages: [commit-msg]

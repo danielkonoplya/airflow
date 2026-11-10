@@ -5,23 +5,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Что это
 
 DAG'и Airflow 2.10 для интеграции с Greenplum 6.x (в т.ч. Arenadata DB 6). Airflow уже развёрнут в Kubernetes:
-в репозитории только DAG'и и их библиотека, без инфраструктуры, тестов и CI. Каталог `dags/` целиком
+в репозитории только DAG'и, их библиотека, тесты и CI (GitHub Actions), без инфраструктуры. Каталог `dags/` целиком
 кладётся в dags folder (git-sync/образ). Подробности для людей — в `README.md`.
+
+## Соглашения
+
+Ветки, коммиты, заголовки PR и нейминг DAG'ов/задач/таблиц/SQL — строго по `CONTRIBUTING.md`; формат проверяет
+CI (`scripts/check_conventions.py`, `tests/test_dag_integrity.py`). Кратко:
+
+- Ветка: `feature|fix|hotfix/<KEY-123>-<desc>` или `chore|docs|ci/<desc>`; от `main`, один PR = одна задача Jira.
+- Коммит и заголовок PR: `<type>(<scope>): <KEY-123> <описание по-русски>` (Conventional Commits, без точки).
+  Ключ в заголовке PR = ключ из имени ветки. Слияние — squash.
+- `dag_id` одиночного DAG'а = имя файла; из фабрики — `gp_<фабрика>__<name>`. `task_id` — `snake_case`, глагол.
+- Описание PR — по `.github/pull_request_template.md`, включая «Как проверено».
 
 ## Команды
 
-Тестов и линтеров в репозитории нет. Проверка конфигов (нужен только PyYAML, Airflow не требуется):
-
 ```bash
-python -c "import sys; sys.path.insert(0, 'dags'); from gp_lib import config as c; c.load_pg_to_gp(); c.load_external(); c.load_ops()"
+ruff check .                                        # линтер (правила в ruff.toml)
+pytest -q tests/test_configs.py                     # валидация YAML-конфигов, нужен только PyYAML
+python scripts/check_conventions.py title "<заголовок PR>" --branch <ветка>
 ```
 
-Проверка импорта DAG'ов требует установленного Airflow, а на нативном Windows он не работает — используйте WSL/Linux:
+Проверка импорта DAG'ов и соглашений по неймингу требует установленного Airflow, а на нативном Windows он не работает —
+её делает job `dagbag` в CI; локально — WSL/Linux:
 
 ```bash
-pip install "apache-airflow==2.10.5" -r requirements.txt \
+pip install "apache-airflow==2.10.5" -r requirements.txt pytest \
   --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.12.txt
-python -c "from airflow.models import DagBag; b = DagBag('dags', include_examples=False); print(b.import_errors or sorted(b.dag_ids))"
+pytest -q tests/test_dag_integrity.py
 ```
 
 ## Архитектура
